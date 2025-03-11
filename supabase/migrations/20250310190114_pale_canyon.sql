@@ -1,0 +1,117 @@
+/*
+  # Stok Yönetimi Tabloları
+
+  1. Yeni Tablolar
+    - `stock_items`: Stok kalemleri
+    - `stock_movements`: Stok hareketleri
+
+  2. Güvenlik
+    - RLS politikaları her tablo için etkinleştirildi
+    - Kimliği doğrulanmış kullanıcılar için CRUD izinleri
+*/
+
+-- Stok Kalemleri Tablosu
+CREATE TABLE IF NOT EXISTS stock_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  category text NOT NULL,
+  sku text UNIQUE NOT NULL,
+  barcode text UNIQUE,
+  unit text NOT NULL,
+  quantity numeric NOT NULL DEFAULT 0,
+  min_quantity numeric NOT NULL DEFAULT 0,
+  max_quantity numeric,
+  location text,
+  price numeric NOT NULL DEFAULT 0,
+  expiry_date timestamptz,
+  description text,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+
+-- Stok Hareketleri Tablosu
+CREATE TABLE IF NOT EXISTS stock_movements (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  item_id uuid NOT NULL REFERENCES stock_items(id) ON DELETE CASCADE,
+  type text NOT NULL CHECK (type IN ('in', 'out')),
+  quantity numeric NOT NULL,
+  reference text NOT NULL,
+  price numeric NOT NULL,
+  description text,
+  performed_by uuid NOT NULL REFERENCES auth.users(id) ON DELETE RESTRICT,
+  created_at timestamptz DEFAULT now(),
+  updated_at timestamptz DEFAULT now()
+);
+
+-- Güncelleme Tetikleyicileri
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+-- stock_items için updated_at tetikleyicisi
+DROP TRIGGER IF EXISTS update_stock_items_updated_at ON stock_items;
+CREATE TRIGGER update_stock_items_updated_at
+  BEFORE UPDATE ON stock_items
+  FOR EACH ROW
+  EXECUTE PROCEDURE update_updated_at_column();
+
+-- stock_movements için updated_at tetikleyicisi
+DROP TRIGGER IF EXISTS update_stock_movements_updated_at ON stock_movements;
+CREATE TRIGGER update_stock_movements_updated_at
+  BEFORE UPDATE ON stock_movements
+  FOR EACH ROW
+  EXECUTE PROCEDURE update_updated_at_column();
+
+-- Stok miktarı güncelleme tetikleyicisi
+CREATE OR REPLACE FUNCTION update_stock_quantity()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.type = 'in' THEN
+      UPDATE stock_items
+      SET quantity = quantity + NEW.quantity
+      WHERE id = NEW.item_id;
+    ELSE
+      UPDATE stock_items
+      SET quantity = quantity - NEW.quantity
+      WHERE id = NEW.item_id;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+-- stock_movements için miktar güncelleme tetikleyicisi
+DROP TRIGGER IF EXISTS update_stock_quantity_on_movement ON stock_movements;
+CREATE TRIGGER update_stock_quantity_on_movement
+  AFTER INSERT ON stock_movements
+  FOR EACH ROW
+  EXECUTE PROCEDURE update_stock_quantity();
+
+-- RLS Politikaları
+ALTER TABLE stock_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE stock_movements ENABLE ROW LEVEL SECURITY;
+
+-- Stok Kalemleri için Politikalar
+CREATE POLICY "authenticated_select" ON stock_items
+  FOR SELECT TO authenticated USING (true);
+
+CREATE POLICY "authenticated_insert" ON stock_items
+  FOR INSERT TO authenticated WITH CHECK (true);
+
+CREATE POLICY "authenticated_update" ON stock_items
+  FOR UPDATE TO authenticated USING (true);
+
+-- Stok Hareketleri için Politikalar
+CREATE POLICY "authenticated_select" ON stock_movements
+  FOR SELECT TO authenticated USING (true);
+
+CREATE POLICY "authenticated_insert" ON stock_movements
+  FOR INSERT TO authenticated WITH CHECK (true);
+
+CREATE POLICY "authenticated_update" ON stock_movements
+  FOR UPDATE TO authenticated USING (true);
